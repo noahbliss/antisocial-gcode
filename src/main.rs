@@ -171,6 +171,12 @@ async fn process_gcode_command(
     let trimmed = command.trim();
     println!("Received GCODE: {}", trimmed);
 
+    if trimmed.eq("G28") {
+        println!("Received G28 home command");
+        *current_pos = Coordinate { x: 0.0, y: 0.0 };
+        return Ok(());
+    }
+
     if let Some(captures) = gcode_regex.captures(trimmed) {
         // Extract target X and Y.
         let target_x = captures
