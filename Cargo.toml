@@ -1,0 +1,12 @@
+[package]
+name = "gcode_proxy_async"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.28", features = ["full"] }
+regex = "1.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio-serial = "5.4.5"
+anyhow = "1.0.97"
