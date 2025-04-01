@@ -1,5 +1,6 @@
 use regex::Regex;
 use serde::Deserialize;
+use static_cell::StaticCell;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -36,6 +37,14 @@ struct BoxArea {
     xmax: f64,
     ymin: f64,
     ymax: f64,
+}
+
+#[derive(Debug, PartialEq)]
+enum Side {
+    Top,
+    Bottom,
+    Left,
+    Right,
 }
 
 /// Reads the JSON configuration file and returns a BoxArea for the exclusion zone.
@@ -161,57 +170,134 @@ fn compute_entry_path_via_boundary(
     area: &BoxArea,
 ) -> Vec<Coordinate> {
     let eps = 0.001; // tolerance for "alignment"
-                     // Determine if the target is on the left or right half of the exclusion area.
+
+    // Determine if the target is on the left or right half of the exclusion area.
     let area_mid_x = (area.xmin + area.xmax) / 2.0;
     // Choose the appropriate boundary and offset values.
     // For left entry, we approach from outside the left side (offset -1.0).
     // For right entry, we approach from outside the right side (offset +1.0).
-    let (entry_boundary, offset) = if target.x < area_mid_x {
-        (area.xmin, -1.0)
+    let (entry_boundary, offset, x_side) = if target.x < area_mid_x {
+        (area.xmin, -1.0, Side::Left)
     } else {
-        (area.xmax, 1.0)
+        (area.xmax, 1.0, Side::Right)
     };
 
     // Compute the ideal external x position (outside the box) for entry.
     let ideal_x = entry_boundary + offset;
 
     // Compute the vertical waypoint y coordinate.
-    let ideal_y = if target.y > area.ymax {
-        area.ymax + 1.0
-    } else if target.y < area.ymin {
-        area.ymin - 1.0
-    } else {
-        // When target.y is inside the exclusion area vertically,
-        // for consistency we choose to approach from above.
-        area.ymax + 1.0
-    };
+    let area_mid_y = (area.ymin + area.ymax) / 2.0;
+    let ideal_y = target.y;
 
     let mut path = Vec::new();
 
-    // Optionally add a horizontal alignment waypoint if needed.
-    if (start.x - ideal_x).abs() > eps {
-        let wp_horiz = Coordinate {
-            x: ideal_x,
-            y: start.y,
-        };
-        path.push(wp_horiz);
-    }
-
-    // Optionally add a vertical alignment waypoint if needed.
-    // We use the y from the last waypoint in the path if it exists, else from start.
-    let current_y = if let Some(last) = path.last() {
-        last.y
+    let corner_wp_needed = if x_side == Side::Left && start.x <= area.xmin {
+        false
+    } else if x_side == Side::Right && start.x >= area.xmax {
+        false
     } else {
-        start.y
+        true
+    };
+    println!(
+        "Entering from {:?} with start.x of {} - corner needed: {}",
+        x_side, start.x, corner_wp_needed
+    );
+
+    let safe_top_left = Coordinate {
+        x: area.xmin - 1.0,
+        y: area.ymax + 1.0,
+    };
+    let safe_bottom_left = Coordinate {
+        x: area.xmin - 1.0,
+        y: area.ymin - 1.0,
+    };
+    let safe_top_right = Coordinate {
+        x: area.xmax + 1.0,
+        y: area.ymax + 1.0,
+    };
+    let safe_bottom_right = Coordinate {
+        x: area.xmax + 1.0,
+        y: area.ymin - 1.0,
     };
 
-    if (current_y - ideal_y).abs() > eps {
-        let wp_vert = Coordinate {
+    if !corner_wp_needed {
+        if start.y >= area.ymax && start.y <= area.ymin {
+            let hop1 = Coordinate {
+                x: ideal_x,
+                y: ideal_y,
+            };
+            path.push(hop1);
+        }
+        path.push(target.clone());
+        return path;
+    } else if x_side == Side::Left {
+        // We're aligned with the exclusion area on the wrong side.
+        match start.y > area_mid_y {
+            true => {
+                if start.y < area.ymax && start.y > area.ymin {
+                    path.push(safe_top_right);
+                }
+                path.push(safe_top_left);
+            }
+            false => {
+                if start.y < area.ymax && start.y > area.ymin {
+                    path.push(safe_bottom_right);
+                }
+                path.push(safe_bottom_left);
+            }
+        };
+        let pre_enter = Coordinate {
             x: ideal_x,
             y: ideal_y,
         };
-        path.push(wp_vert);
+        path.push(pre_enter);
+    } else {
+        // side right
+        match start.y > area_mid_y {
+            true => {
+                if start.y < area.ymax && start.y > area.ymin {
+                    path.push(safe_top_left);
+                }
+                path.push(safe_top_right);
+            }
+            false => {
+                if start.y < area.ymax && start.y > area.ymin {
+                    path.push(safe_bottom_left);
+                }
+                path.push(safe_bottom_right);
+            }
+        };
+        let pre_enter = Coordinate {
+            x: ideal_x,
+            y: ideal_y,
+        };
+        path.push(pre_enter);
     }
+
+    // // Optionally add a horizontal alignment waypoint if needed.
+    // if (start.x - ideal_x).abs() > eps {
+    //     let wp_horiz = Coordinate {
+    //         x: ideal_x,
+    //         y: start.y,
+    //     };
+    //     path.push(wp_horiz);
+    // }
+
+    // // Optionally add a vertical alignment waypoint if needed.
+    // // We use the y from the last waypoint in the path if it exists, else from start.
+    // let current_y = if let Some(last) = path.last() {
+    //     last.y
+    // } else {
+    //     start.y
+    // };
+
+    // if (current_y - ideal_y).abs() > eps {
+    //     let wp_vert = Coordinate {
+    //         x: ideal_x,
+    //         y: ideal_y,
+    //     };
+    //     path.push(wp_vert);
+    // }
 
     // Finally, add the target which is assumed to be inside the exclusion area.
     path.push(target.clone());
