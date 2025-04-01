@@ -274,31 +274,6 @@ fn compute_entry_path_via_boundary(
         path.push(pre_enter);
     }
 
-    // // Optionally add a horizontal alignment waypoint if needed.
-    // if (start.x - ideal_x).abs() > eps {
-    //     let wp_horiz = Coordinate {
-    //         x: ideal_x,
-    //         y: start.y,
-    //     };
-    //     path.push(wp_horiz);
-    // }
-
-    // // Optionally add a vertical alignment waypoint if needed.
-    // // We use the y from the last waypoint in the path if it exists, else from start.
-    // let current_y = if let Some(last) = path.last() {
-    //     last.y
-    // } else {
-    //     start.y
-    // };
-
-    // if (current_y - ideal_y).abs() > eps {
-    //     let wp_vert = Coordinate {
-    //         x: ideal_x,
-    //         y: ideal_y,
-    //     };
-    //     path.push(wp_vert);
-    // }
-
     // Finally, add the target which is assumed to be inside the exclusion area.
     path.push(target.clone());
 
@@ -377,10 +352,33 @@ async fn process_gcode_command(
 
         // If we are already inside the exclusion zone and want to leave, bypass the detour logic.
         if point_inside_box(current_pos.x, current_pos.y, exclusion_area) {
-            println!("Currently inside exclusion zone. Leaving zone directly.");
-            serial_writer
-                .write_all(format!("{}\n", trimmed).as_bytes())
-                .await?;
+            println!(
+                "Currently inside exclusion zone. Leaving zone via closest Y boundary to target."
+            );
+
+            let mut path = Vec::new();
+
+            if target.y >= ((exclusion_area.ymax + exclusion_area.ymin) / 2.0) {
+                //go up
+                path.push(Coordinate {
+                    x: current_pos.x,
+                    y: (exclusion_area.ymax + 1.0),
+                });
+            } else {
+                //go down
+                path.push(Coordinate {
+                    x: current_pos.x,
+                    y: (exclusion_area.ymin + 1.0),
+                });
+            }
+
+            path.push(target.clone());
+            let exit_commands = create_gcode_for_path(&path);
+            for cmd in exit_commands {
+                serial_writer
+                    .write_all(format!("{}\n", cmd).as_bytes())
+                    .await?;
+            }
             *current_pos = target;
             return Ok(());
         }
