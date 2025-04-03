@@ -84,79 +84,288 @@ fn load_config<P: AsRef<Path>>(path: P) -> BoxArea {
 
 /// Returns true if the given point (x, y) is inside the box.
 fn point_inside_box(x: f64, y: f64, area: &BoxArea) -> bool {
-    (area.xmin <= x && x <= area.xmax) && (area.ymin <= y && y <= area.ymax)
+    x >= area.xmin && x <= area.xmax && y >= area.ymin && y <= area.ymax
+}
+
+// /// A rudimentary sampling along the line to see if it passes through the exclusion zone.
+// fn line_intersects_box(x0: f64, y0: f64, x1: f64, y1: f64, area: &BoxArea) -> bool {
+//     let steps = 400;
+//     for i in 0..=steps {
+//         let t = (i as f64) / (steps as f64);
+//         let x = x0 + t * (x1 - x0);
+//         let y = y0 + t * (y1 - y0);
+//         if point_inside_box(x, y, area) {
+//             return true;
+//         }
+//     }
+//     false
+// }
+
+/// Returns the Euclidean distance between two points.
+fn distance(a: &Coordinate, b: &Coordinate) -> f64 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
 }
 
 /// A rudimentary sampling along the line to see if it passes through the exclusion zone.
-fn line_intersects_box(x0: f64, y0: f64, x1: f64, y1: f64, area: &BoxArea) -> bool {
-    let steps = 100;
-    for i in 0..=steps {
-        let t = (i as f64) / (steps as f64);
-        let x = x0 + t * (x1 - x0);
-        let y = y0 + t * (y1 - y0);
-        if point_inside_box(x, y, area) {
-            return true;
+// fn line_intersects_box(p1: &Coordinate, p2: &Coordinate, area: &BoxArea) -> bool {
+//     // fn line_intersects_box(x0: f64, y0: f64, x1: f64, y1: f64, area: &BoxArea) -> bool {
+//     let steps = 200;
+//     for i in 0..=steps {
+//         let t = (i as f64) / (steps as f64);
+//         let x = p1.x + t * (p2.x - p1.x);
+//         let y = p1.y + t * (p2.y - p1.y);
+//         if point_inside_box(x, y, area) {
+//             return true;
+//         }
+//     }
+//     false
+// }
+//
+
+fn line_intersects_box(p1: &Coordinate, p2: &Coordinate, area: &BoxArea) -> bool {
+    println!("source: {:?} dest: {:?} area: {:?}", p1, p2, area);
+    let mut x1 = p1.x;
+    let mut y1 = p1.y;
+    let mut x2 = p2.x;
+    let mut y2 = p2.y;
+
+    let mut code1 = compute_out_code(x1, y1, area);
+    let mut code2 = compute_out_code(x2, y2, area);
+
+    loop {
+        if code1 == 0 && code2 == 0 {
+            return true; // Both points inside the box
+        } else if (code1 & code2) != 0 {
+            return false; // Both points outside the box in the same region
+        } else {
+            let code_out;
+            let (mut x, mut y);
+
+            if code1 != 0 {
+                code_out = code1;
+            } else {
+                code_out = code2;
+            }
+
+            if (code_out & 8) != 0 {
+                x = x1 + (x2 - x1) * (area.ymax - y1) / (y2 - y1);
+                y = area.ymax;
+            } else if (code_out & 4) != 0 {
+                x = x1 + (x2 - x1) * (area.ymin - y1) / (y2 - y1);
+                y = area.ymin;
+            } else if (code_out & 2) != 0 {
+                y = y1 + (y2 - y1) * (area.xmax - x1) / (x2 - x1);
+                x = area.xmax;
+            } else {
+                y = y1 + (y2 - y1) * (area.xmin - x1) / (x2 - x1);
+                x = area.xmin;
+            }
+
+            if code_out == code1 {
+                x1 = x;
+                y1 = y;
+                code1 = compute_out_code(x1, y1, area);
+            } else {
+                x2 = x;
+                y2 = y;
+                code2 = compute_out_code(x2, y2, area);
+            }
         }
     }
-    false
 }
 
-/// Computes a detour path that avoids going through the exclusion area.
-/// For simplicity, this returns a vector of intermediate waypoints.
-fn compute_detour_path(start: &Coordinate, target: &Coordinate, area: &BoxArea) -> Vec<Coordinate> {
-    let mut detour = Vec::new();
+fn compute_out_code(x: f64, y: f64, area: &BoxArea) -> u8 {
+    let mut code = 0;
 
-    if start.x < area.xmin {
-        // Go around left side.
-        let wp1 = Coordinate {
-            x: area.xmin - 1.0,
-            y: start.y,
-        };
-        let wp2 = if target.y >= area.ymax {
-            Coordinate {
-                x: wp1.x,
-                y: area.ymax + 1.0,
-            }
-        } else if target.y <= area.ymin {
-            Coordinate {
-                x: wp1.x,
-                y: area.ymin - 1.0,
-            }
-        } else {
-            Coordinate {
-                x: wp1.x,
-                y: area.ymax + 1.0,
-            }
-        };
-        detour.push(wp1);
-        detour.push(wp2);
-    } else {
-        // Go around right side.
-        let wp1 = Coordinate {
-            x: area.xmax + 1.0,
-            y: start.y,
-        };
-        let wp2 = if target.y >= area.ymax {
-            Coordinate {
-                x: wp1.x,
-                y: area.ymax + 1.0,
-            }
-        } else if target.y <= area.ymin {
-            Coordinate {
-                x: wp1.x,
-                y: area.ymin - 1.0,
-            }
-        } else {
-            Coordinate {
-                x: wp1.x,
-                y: area.ymax + 1.0,
-            }
-        };
-        detour.push(wp1);
-        detour.push(wp2);
+    if x < area.xmin {
+        code |= 1;
+    } else if x > area.xmax {
+        code |= 2;
     }
-    detour.push(target.clone());
-    detour
+    if y < area.ymin {
+        code |= 4;
+    } else if y > area.ymax {
+        code |= 8;
+    }
+
+    code
+}
+
+/// Computes a detour path (as intermediate waypoint(s)) that avoids the exclusion area.
+/// Each intermediate waypoint counts as one move and up to two moves are allowed.
+/// It always assumes a detour is required (i.e. does not check for a clear direct path).
+fn compute_detour_path(start: &Coordinate, target: &Coordinate, area: &BoxArea) -> Vec<Coordinate> {
+    let margin = 1.0;
+
+    // Helper to test if a candidate waypoint produces a safe path.
+    let valid_waypoint = |wp: &Coordinate| -> bool {
+        !line_intersects_box(start, wp, area) && !line_intersects_box(wp, target, area)
+    };
+
+    // Attempt one-move detours first.
+    let candidates = [
+        // Horizontal candidates
+        Coordinate {
+            x: area.xmin - margin,
+            y: target.y,
+        },
+        Coordinate {
+            x: area.xmax + margin,
+            y: target.y,
+        },
+        Coordinate {
+            x: area.xmin - margin,
+            y: start.y,
+        },
+        Coordinate {
+            x: area.xmax + margin,
+            y: start.y,
+        },
+        // Vertical candidates.
+        Coordinate {
+            x: target.x,
+            y: area.ymin - margin,
+        },
+        Coordinate {
+            x: target.x,
+            y: area.ymax + margin,
+        },
+        Coordinate {
+            x: start.x,
+            y: area.ymin - margin,
+        },
+        Coordinate {
+            x: start.x,
+            y: area.ymax + margin,
+        },
+    ];
+
+    let mut best_one_move: Option<(Coordinate, f64)> = None;
+    for wp in candidates.iter() {
+        if valid_waypoint(wp) {
+            let total_distance = distance(start, wp) + distance(wp, target);
+            if best_one_move
+                .as_ref()
+                .map_or(true, |&(_, d)| total_distance < d)
+            {
+                best_one_move = Some((wp.clone(), total_distance));
+            }
+        }
+    }
+
+    if let Some((best_wp, _)) = best_one_move {
+        return vec![best_wp];
+    }
+
+    // No one-move solution found; try a two-move detour.
+    // We consider two strategies: horizontal-first and vertical-first.
+    fn two_move_candidate(
+        start: &Coordinate,
+        target: &Coordinate,
+        area: &BoxArea,
+        margin: f64,
+        horizontal_first: bool,
+    ) -> Option<(Vec<Coordinate>, f64)> {
+        if horizontal_first {
+            // First move: horizontal shift from the start to a safe X.
+            let safe_x = if start.x < area.xmin {
+                area.xmin - margin
+            } else if start.x > area.xmax {
+                area.xmax + margin
+            } else {
+                // When start is horizontally in range, prefer left side.
+                area.xmin - margin
+            };
+            let wp1 = Coordinate {
+                x: safe_x,
+                y: start.y,
+            };
+            // Second move: vertical adjustment to a safe Y near the target.
+            let safe_y = if target.y > area.ymax {
+                area.ymax + margin
+            } else if target.y < area.ymin {
+                area.ymin - margin
+            } else {
+                // When target is within the vertical bounds, choose the closer edge relative to start.
+                if (start.y - (area.ymin - margin)).abs() < (start.y - (area.ymax + margin)).abs() {
+                    area.ymin - margin
+                } else {
+                    area.ymax + margin
+                }
+            };
+            let wp2 = Coordinate {
+                x: safe_x,
+                y: safe_y,
+            };
+            if !line_intersects_box(start, &wp1, area)
+                && !line_intersects_box(&wp1, &wp2, area)
+                && !line_intersects_box(&wp2, target, area)
+            {
+                let total_distance =
+                    distance(start, &wp1) + distance(&wp1, &wp2) + distance(&wp2, target);
+                return Some((vec![wp1, wp2], total_distance));
+            }
+        } else {
+            // Vertical-first: first move from start vertically to a safe Y.
+            let safe_y = if start.y < area.ymin {
+                area.ymin - margin
+            } else if start.y > area.ymax {
+                area.ymax + margin
+            } else {
+                area.ymin - margin
+            };
+            let wp1 = Coordinate {
+                x: start.x,
+                y: safe_y,
+            };
+            // Second move: horizontal adjustment to a safe X near the target.
+            let safe_x = if target.x > area.xmax {
+                area.xmax + margin
+            } else if target.x < area.xmin {
+                area.xmin - margin
+            } else {
+                if (start.x - (area.xmin - margin)).abs() < (start.x - (area.xmax + margin)).abs() {
+                    area.xmin - margin
+                } else {
+                    area.xmax + margin
+                }
+            };
+            let wp2 = Coordinate {
+                x: safe_x,
+                y: safe_y,
+            };
+            if !line_intersects_box(start, &wp1, area)
+                && !line_intersects_box(&wp1, &wp2, area)
+                && !line_intersects_box(&wp2, target, area)
+            {
+                let total_distance =
+                    distance(start, &wp1) + distance(&wp1, &wp2) + distance(&wp2, target);
+                return Some((vec![wp1, wp2], total_distance));
+            }
+        }
+        None
+    }
+
+    let candidate1 = two_move_candidate(start, target, area, margin, true);
+    let candidate2 = two_move_candidate(start, target, area, margin, false);
+
+    let best_two = match (candidate1, candidate2) {
+        (Some((path1, dist1)), Some((path2, dist2))) => {
+            if dist1 <= dist2 {
+                Some(path1)
+            } else {
+                Some(path2)
+            }
+        }
+        (Some((path, _)), None) => Some(path),
+        (None, Some((path, _))) => Some(path),
+        (None, None) => None,
+    };
+
+    // If no valid two-move solution was found (unexpected), return an empty detour.
+    let mut path = best_two.unwrap_or_default();
+    path.push(target.clone());
+    return path;
 }
 
 /// Computes a path that skirts the exclusion area and then enters it
@@ -169,7 +378,7 @@ fn compute_entry_path_via_boundary(
     target: &Coordinate,
     area: &BoxArea,
 ) -> Vec<Coordinate> {
-    let eps = 0.001; // tolerance for "alignment"
+    let eps = 0.001; // tolerance for alignment
 
     // Determine if the target is on the left or right half of the exclusion area.
     let area_mid_x = (area.xmin + area.xmax) / 2.0;
@@ -286,10 +495,12 @@ fn compute_entry_path_via_boundary(
 }
 
 /// Given a list of points, create GCODE (G1) commands that move to each point.
-fn create_gcode_for_path(path: &[Coordinate]) -> Vec<String> {
+fn create_gcode_for_path(path: &[Coordinate], s: Option<f64>, f: Option<f64>) -> Vec<String> {
+    let s = s.unwrap_or(800 as f64);
+    let f = f.unwrap_or(12000 as f64);
     path.iter()
         //M204S488.78G1X4.0008Y86.8615F3820.03
-        .map(|pt| format!("M204 S800 G1 X{:.3} Y{:.3} F12000", pt.x, pt.y))
+        .map(|pt| format!("M204 S{} G1 X{:.3} Y{:.3} F{}", s, pt.x, pt.y, f))
         .collect()
 }
 
@@ -313,15 +524,23 @@ async fn process_gcode_command(
     }
 
     if let Some(captures) = gcode_regex.captures(trimmed) {
-        // Extract target X and Y.
-        let target_x = captures
+        // Extract target S, X, Y, and F.
+        let target_s = captures
             .get(2)
+            .map(|m| f64::from_str(m.as_str()).ok())
+            .unwrap_or(None);
+        let target_x = captures
+            .get(3)
             .map(|m| f64::from_str(m.as_str()).unwrap_or(current_pos.x))
             .unwrap_or(current_pos.x);
         let target_y = captures
-            .get(3)
+            .get(4)
             .map(|m| f64::from_str(m.as_str()).unwrap_or(current_pos.y))
             .unwrap_or(current_pos.y);
+        let target_f = captures
+            .get(5)
+            .map(|m| f64::from_str(m.as_str()).ok())
+            .unwrap_or(None);
         let target = Coordinate {
             x: target_x,
             y: target_y,
@@ -339,7 +558,7 @@ async fn process_gcode_command(
                 println!("Entering the exclusion zone, routing via a safe boundary...");
                 let entry_path =
                     compute_entry_path_via_boundary(current_pos, &target, &exclusion_area);
-                let entry_commands = create_gcode_for_path(&entry_path);
+                let entry_commands = create_gcode_for_path(&entry_path, target_s, target_f);
                 for cmd in entry_commands {
                     serial_writer
                         .write_all(format!("{}\n", cmd).as_bytes())
@@ -373,7 +592,7 @@ async fn process_gcode_command(
             }
 
             path.push(target.clone());
-            let exit_commands = create_gcode_for_path(&path);
+            let exit_commands = create_gcode_for_path(&path, target_s, target_f);
             for cmd in exit_commands {
                 serial_writer
                     .write_all(format!("{}\n", cmd).as_bytes())
@@ -383,16 +602,10 @@ async fn process_gcode_command(
             return Ok(());
         }
 
-        if line_intersects_box(
-            current_pos.x,
-            current_pos.y,
-            target.x,
-            target.y,
-            exclusion_area,
-        ) {
+        if line_intersects_box(current_pos, &target, exclusion_area) {
             println!("Direct move crosses exclusion zone. Computing detour…");
             let detour_points = compute_detour_path(current_pos, &target, exclusion_area);
-            let detour_commands = create_gcode_for_path(&detour_points);
+            let detour_commands = create_gcode_for_path(&detour_points, target_s, target_f);
             for cmd in detour_commands {
                 println!("Sending detour command: {}", cmd);
                 serial_writer
@@ -514,9 +727,8 @@ async fn main() -> anyhow::Result<()> {
     let current_pos = Arc::new(Mutex::new(Coordinate { x: 0.0, y: 0.0 }));
 
     // Precompile a regex to match G0/G1 commands with X and Y coordinates.
-    let gcode_regex =
-        Regex::new(r"^(G0|G1|M204)(?:.*?X([-+]?[0-9]*\.?[0-9]+))?(?:.*?Y([-+]?[0-9]*\.?[0-9]+))?")
-            .expect("Failed to compile regex");
+    let gcode_regex = Regex::new(r"^(G0|G1|M204)(?:.*?S([-+]?[0-9]*\.?[0-9]+))?(?:.*?X([-+]?[0-9]*\.?[0-9]+))?(?:.*?Y([-+]?[0-9]*\.?[0-9]+))?(?:.*?F([-+]?[0-9]*\.?[0-9]+))?")
+        .expect("Failed to compile regex");
 
     // Create a broadcast channel to carry serial responses.
     let (serial_tx, _) = broadcast::channel::<String>(100);
