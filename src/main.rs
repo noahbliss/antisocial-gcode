@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
+use tokio::time::sleep;
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -364,7 +365,7 @@ fn compute_detour_path(start: &Coordinate, target: &Coordinate, area: &BoxArea) 
 
     // If no valid two-move solution was found (unexpected), return an empty detour.
     let mut path = best_two.unwrap_or_default();
-    path.push(target.clone());
+    // path.push(target.clone());
     return path;
 }
 
@@ -437,7 +438,7 @@ fn compute_entry_path_via_boundary(
             };
             path.push(hop1);
         }
-        path.push(target.clone());
+        // path.push(target.clone());
         return path;
     } else if x_side == Side::Left {
         // We're aligned with the exclusion area on the wrong side.
@@ -484,7 +485,7 @@ fn compute_entry_path_via_boundary(
     }
 
     // Finally, add the target which is assumed to be inside the exclusion area.
-    path.push(target.clone());
+    // path.push(target.clone());
 
     // If no intermediate waypoints were added (or only one was added) and the straight
     // line from start to target already "enters" via the desired boundary, then the path
@@ -513,6 +514,7 @@ async fn process_gcode_command(
     exclusion_area: &BoxArea,
     serial_writer: &mut (impl AsyncWriteExt + Unpin),
     gcode_regex: &Regex,
+    detour_signal: &tokio::sync::watch::Sender<bool>,
 ) -> anyhow::Result<()> {
     let trimmed = command.trim();
     println!("Received GCODE: {}", trimmed);
@@ -564,6 +566,9 @@ async fn process_gcode_command(
                         .write_all(format!("{}\n", cmd).as_bytes())
                         .await?;
                 }
+                serial_writer
+                    .write_all(format!("{}\n", trimmed).as_bytes())
+                    .await?;
                 *current_pos = target;
                 return Ok(());
             }
@@ -591,19 +596,23 @@ async fn process_gcode_command(
                 });
             }
 
-            path.push(target.clone());
+            // path.push(target.clone());
             let exit_commands = create_gcode_for_path(&path, target_s, target_f);
             for cmd in exit_commands {
                 serial_writer
                     .write_all(format!("{}\n", cmd).as_bytes())
                     .await?;
             }
+            serial_writer
+                .write_all(format!("{}\n", trimmed).as_bytes())
+                .await?;
             *current_pos = target;
             return Ok(());
         }
 
         if line_intersects_box(current_pos, &target, exclusion_area) {
             println!("Direct move crosses exclusion zone. Computing detour…");
+            detour_signal.send(true).unwrap();
             let detour_points = compute_detour_path(current_pos, &target, exclusion_area);
             let detour_commands = create_gcode_for_path(&detour_points, target_s, target_f);
             for cmd in detour_commands {
@@ -612,6 +621,10 @@ async fn process_gcode_command(
                     .write_all(format!("{}\n", cmd).as_bytes())
                     .await?;
             }
+            serial_writer
+                .write_all(format!("{}\n", trimmed).as_bytes())
+                .await?;
+            detour_signal.send(false).unwrap();
             *current_pos = target;
         } else {
             println!("Direct move valid. Sending command.");
@@ -655,10 +668,16 @@ async fn handle_client(
 
     // Spawn a task to forward serial responses from the broadcast channel to the TCP client.
     let writer_clone = Arc::clone(&writer);
+    let (detouring_w, mut detouring_r) = watch::channel(false);
     tokio::spawn(async move {
         loop {
             match serial_rx.recv().await {
                 Ok(line) => {
+                    if *detouring_r.borrow_and_update() == true {
+                        println!("Waiting for detour to complete...");
+                        detouring_r.changed().await.unwrap();
+                        println!("Detour completed, resuming exgress messages.");
+                    }
                     let mut writer_lock = writer_clone.lock().await;
                     if let Err(e) = writer_lock
                         .write_all(format!("{}\n", line).as_bytes())
@@ -691,6 +710,7 @@ async fn handle_client(
                 &exclusion_area,
                 &mut *serial_lock,
                 &gcode_regex,
+                &detouring_w,
             )
             .await
             {
