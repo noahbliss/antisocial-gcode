@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, watch, Mutex};
-use tokio::time::sleep;
+use tokio::time::sleep;  
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -18,6 +18,12 @@ struct Coordinate {
     x: f64,
     y: f64,
 }
+
+// #[derive(Debug, Deserialize, Clone)]
+// struct TargetMeta {
+//     has_x: bool,
+//     has_y: bool,
+// }
 
 #[derive(Debug, Deserialize)]
 struct ExclusionBox {
@@ -379,7 +385,7 @@ fn compute_entry_path_via_boundary(
     target: &Coordinate,
     area: &BoxArea,
 ) -> Vec<Coordinate> {
-    let eps = 0.001; // tolerance for alignment
+    // let eps = 0.001; // tolerance for alignment
 
     // Determine if the target is on the left or right half of the exclusion area.
     let area_mid_x = (area.xmin + area.xmax) / 2.0;
@@ -517,6 +523,10 @@ async fn process_gcode_command(
     detour_signal: &tokio::sync::watch::Sender<bool>,
 ) -> anyhow::Result<()> {
     let trimmed = command.trim();
+    // let mut target_meta = TargetMeta {
+    //     has_x: false,
+    //     has_y: false,
+    // };
     println!("Received GCODE: {}", trimmed);
 
     if trimmed.eq("G28") {
@@ -527,6 +537,7 @@ async fn process_gcode_command(
 
     if let Some(captures) = gcode_regex.captures(trimmed) {
         // Extract target S, X, Y, and F.
+
         let target_s = captures
             .get(2)
             .map(|m| f64::from_str(m.as_str()).ok())
@@ -534,11 +545,11 @@ async fn process_gcode_command(
         let target_x = captures
             .get(3)
             .map(|m| f64::from_str(m.as_str()).unwrap_or(current_pos.x))
-            .unwrap_or(current_pos.x);
+            .unwrap();
         let target_y = captures
             .get(4)
             .map(|m| f64::from_str(m.as_str()).unwrap_or(current_pos.y))
-            .unwrap_or(current_pos.y);
+            .unwrap();
         let target_f = captures
             .get(5)
             .map(|m| f64::from_str(m.as_str()).ok())
@@ -558,8 +569,9 @@ async fn process_gcode_command(
                 return Ok(());
             } else {
                 println!("Entering the exclusion zone, routing via a safe boundary...");
-                let entry_path =
+                let mut entry_path =
                     compute_entry_path_via_boundary(current_pos, &target, &exclusion_area);
+                entry_path.push(target.clone()); //I know this is redundant but it is easier than double parsing the original command.
                 let entry_commands = create_gcode_for_path(&entry_path, target_s, target_f);
                 for cmd in entry_commands {
                     serial_writer
@@ -597,6 +609,7 @@ async fn process_gcode_command(
             }
 
             // path.push(target.clone());
+            path.push(target.clone()); //I know this is redundant but it is easier than double parsing the original command.
             let exit_commands = create_gcode_for_path(&path, target_s, target_f);
             for cmd in exit_commands {
                 serial_writer
@@ -613,7 +626,8 @@ async fn process_gcode_command(
         if line_intersects_box(current_pos, &target, exclusion_area) {
             println!("Direct move crosses exclusion zone. Computing detour…");
             detour_signal.send(true).unwrap();
-            let detour_points = compute_detour_path(current_pos, &target, exclusion_area);
+            let mut detour_points = compute_detour_path(current_pos, &target, exclusion_area);
+            detour_points.push(target.clone()); //I know this is redundant but it is easier than double parsing the original command.
             let detour_commands = create_gcode_for_path(&detour_points, target_s, target_f);
             for cmd in detour_commands {
                 println!("Sending detour command: {}", cmd);
